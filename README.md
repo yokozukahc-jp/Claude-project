@@ -89,5 +89,5 @@ python3 scripts/fetch_cardio_papers.py --outdir ~/Desktop
 ## 動作要件
 
 - macOS（Numbers 変換と launchd 登録のため）
-- Python 3.9 以上 + `openpyxl`（`setup.sh` が導入します）
+- Python 3.9 以上 + `openpyxl` と `anthropic`（`setup.sh` が導入します）
 - Numbers.app（未インストールでも `.xlsx` は生成されます）

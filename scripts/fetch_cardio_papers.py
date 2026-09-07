@@ -17,7 +17,6 @@ import argparse
 import datetime as dt
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -173,40 +172,65 @@ def translate(rows, model="claude-opus-5"):
     """Claude API で抄録を日本語サマリーに要約翻訳する。
 
     ANTHROPIC_API_KEY が未設定なら英語抄録のみを残してスキップする。
+    1本ずつ独立に処理し、失敗した論文だけを記録して残りは続行する。
     """
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
         print("! ANTHROPIC_API_KEY が未設定のため日本語訳をスキップします", file=sys.stderr)
         return
 
+    try:
+        import anthropic
+    except ImportError:
+        print("! anthropic パッケージが未導入のため日本語訳をスキップします\n"
+              "  導入するには: python3 -m pip install --user anthropic", file=sys.stderr)
+        return
+
+    # レート制限(429)やサーバエラーは SDK が指数バックオフで再試行する
+    client = anthropic.Anthropic(max_retries=5, timeout=300.0)
+
+    system = (
+        "あなたは循環器内科医向けの抄読会資料を作成する医学翻訳者です。"
+        "英文抄録を日本語で400字程度に要約翻訳してください。"
+        "背景・方法・結果・結論がわかるようにし、数値と統計値（ハザード比、信頼区間、"
+        "p値、症例数など）は原文のまま保持してください。"
+        "前置き・見出し・補足は書かず、要約本文のみを出力してください。"
+    )
+
+    failed = 0
     for i, row in enumerate(rows, 1):
-        prompt = (
-            "以下は医学論文の英文抄録です。日本人循環器医が読む週次抄読リスト用に、"
-            "背景・方法・結果・結論がわかる日本語サマリーへ400字程度で要約翻訳してください。"
-            "数値と統計値は原文どおり保持し、前置きや補足は書かず要約本文のみを出力してください。\n\n"
-            f"タイトル: {row['論文タイトル']}\n\n抄録:\n{row['原題サマリー(英語)']}"
-        )
-        body = json.dumps({
-            "model": model, "max_tokens": 1200,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages", data=body,
-            headers={
-                "content-type": "application/json",
-                "x-api-key": key,
-                "anthropic-version": "2023-06-01",
-            },
-        )
         try:
-            with urllib.request.urlopen(req, timeout=180) as r:
-                resp = json.loads(r.read())
-            row["サマリー（日本語訳）"] = "".join(
-                b.get("text", "") for b in resp.get("content", [])
-            ).strip()
-        except Exception as e:  # noqa: BLE001
-            row["サマリー（日本語訳）"] = f"[翻訳失敗: {e}]"
+            res = client.messages.create(
+                model=model,
+                max_tokens=8000,  # 思考トークンも消費するため余裕を持たせる
+                output_config={"effort": "low"},  # 定型的な要約翻訳なので低めで十分
+                system=system,
+                messages=[{"role": "user", "content": (
+                    f"タイトル: {row['論文タイトル']}\n\n"
+                    f"抄録:\n{row['原題サマリー(英語)']}"
+                )}],
+            )
+            if res.stop_reason == "refusal":
+                row["サマリー（日本語訳）"] = "[翻訳不可: モデルが応答を拒否しました]"
+                failed += 1
+            else:
+                row["サマリー（日本語訳）"] = "".join(
+                    b.text for b in res.content if b.type == "text"
+                ).strip()
+        except anthropic.RateLimitError as e:
+            row["サマリー（日本語訳）"] = f"[翻訳失敗: レート制限 {e}]"
+            failed += 1
+        except anthropic.APIStatusError as e:
+            row["サマリー（日本語訳）"] = f"[翻訳失敗: HTTP {e.status_code}]"
+            failed += 1
+        except anthropic.APIConnectionError as e:
+            row["サマリー（日本語訳）"] = f"[翻訳失敗: 接続エラー {e}]"
+            failed += 1
+
         print(f"  翻訳 {i}/{len(rows)}", file=sys.stderr)
+
+    if failed:
+        print(f"! {failed} 件の翻訳に失敗しました（該当セルに理由が入っています）",
+              file=sys.stderr)
 
 
 def write_xlsx(rows, path, period):
