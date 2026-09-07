@@ -93,7 +93,7 @@ def load_env_file(path=ENV_FILE):
 
 HEADERS = [
     "雑誌名", "巻(号)", "ページ", "論文タイトル", "著者名", "施設名",
-    "サマリー（日本語訳）", "原題サマリー(英語)", "発行日", "研究種別",
+    "抄録（英語）", "日本語サマリー（記入用）", "発行日", "研究種別",
     "DOI", "PMID", "URL",
 ]
 
@@ -196,8 +196,8 @@ def parse_article(art):
         "論文タイトル": _text(art.find(".//ArticleTitle")),
         "著者名": ", ".join(authors),
         "施設名": affiliation,
-        "サマリー（日本語訳）": "",
-        "原題サマリー(英語)": abstract,
+        "日本語サマリー（記入用）": "",
+        "抄録（英語）": abstract,
         "発行日": date,
         "研究種別": ", ".join(sorted(pubtypes - {"Journal Article"})) or "Journal Article",
         "DOI": ids.get("doi", ""),
@@ -213,7 +213,9 @@ def translate(rows, model="claude-opus-5"):
     1本ずつ独立に処理し、失敗した論文だけを記録して残りは続行する。
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return f"ANTHROPIC_API_KEY が設定されていません（{ENV_FILE} を確認してください）"
+        print("i 日本語訳は行いません（英語抄録のみ）。有効にするには --diagnose を参照",
+              file=sys.stderr)
+        return None
 
     try:
         import anthropic
@@ -242,27 +244,27 @@ def translate(rows, model="claude-opus-5"):
                 system=system,
                 messages=[{"role": "user", "content": (
                     f"タイトル: {row['論文タイトル']}\n\n"
-                    f"抄録:\n{row['原題サマリー(英語)']}"
+                    f"抄録:\n{row['抄録（英語）']}"
                 )}],
             )
             if res.stop_reason == "refusal":
-                row["サマリー（日本語訳）"] = "[翻訳不可: モデルが応答を拒否しました]"
+                row["日本語サマリー（記入用）"] = "[翻訳不可: モデルが応答を拒否しました]"
                 failed += 1
             else:
-                row["サマリー（日本語訳）"] = "".join(
+                row["日本語サマリー（記入用）"] = "".join(
                     b.text for b in res.content if b.type == "text"
                 ).strip()
         except anthropic.RateLimitError as e:
-            row["サマリー（日本語訳）"] = f"[翻訳失敗: レート制限 {e}]"
+            row["日本語サマリー（記入用）"] = f"[翻訳失敗: レート制限 {e}]"
             failed += 1
         except anthropic.APIStatusError as e:
-            row["サマリー（日本語訳）"] = f"[翻訳失敗: HTTP {e.status_code}]"
+            row["日本語サマリー（記入用）"] = f"[翻訳失敗: HTTP {e.status_code}]"
             failed += 1
         except anthropic.APIConnectionError as e:
-            row["サマリー（日本語訳）"] = f"[翻訳失敗: 接続エラー {e}]"
+            row["日本語サマリー（記入用）"] = f"[翻訳失敗: 接続エラー {e}]"
             failed += 1
         except Exception as e:  # noqa: BLE001  SDK の版差など想定外の失敗
-            row["サマリー（日本語訳）"] = f"[翻訳失敗: {type(e).__name__}: {e}]"
+            row["日本語サマリー（記入用）"] = f"[翻訳失敗: {type(e).__name__}: {e}]"
             failed += 1
             if i == 1:
                 # 1本目で落ちるなら設定の問題。残り全部を試す前に理由を出す
@@ -373,7 +375,7 @@ def write_xlsx(rows, path, period):
 
     widths = {
         "雑誌名": 22, "巻(号)": 10, "ページ": 14, "論文タイトル": 55, "著者名": 40,
-        "施設名": 40, "サマリー（日本語訳）": 70, "原題サマリー(英語)": 70,
+        "施設名": 40, "抄録（英語）": 85, "日本語サマリー（記入用）": 50,
         "発行日": 14, "研究種別": 24, "DOI": 28, "PMID": 12, "URL": 40,
     }
     for i, h in enumerate(HEADERS, 1):
@@ -460,7 +462,7 @@ def main():
     if warning:
         print()
         print("=" * 60)
-        print(f"⚠️  日本語訳は入っていません: {warning}")
+        print(f"⚠️  {warning}")
         print("   原因を調べるには: python3 " + os.path.basename(__file__) + " --diagnose")
         print("=" * 60)
     return 0

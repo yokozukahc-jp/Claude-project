@@ -12,7 +12,7 @@ if [ "$(uname)" != "Darwin" ]; then
 fi
 
 echo "▶ 依存パッケージを導入します"
-/usr/bin/python3 -m pip install --user --quiet --upgrade openpyxl anthropic
+/usr/bin/python3 -m pip install --user --quiet --upgrade openpyxl
 
 echo "▶ LaunchAgent を配置します: $DEST"
 mkdir -p "$HOME/Library/LaunchAgents"

@@ -21,8 +21,8 @@ Mac の Numbers で開ける一覧ファイルを毎週土曜に自動生成し�
 | 論文タイトル | 原題 |
 | 著者名 | 全著者 |
 | 施設名 | 筆頭著者の所属 |
-| サマリー（日本語訳） | 抄録を400字程度に要約翻訳したもの |
-| 原題サマリー(英語) | PubMed 収載の抄録全文 |
+| 抄録（英語） | PubMed 収載の抄録全文 |
+| 日本語サマリー（記入用） | 空欄。必要な論文だけ手元で訳して書き込む欄（下記参照） |
 | 発行日 / 研究種別 / DOI / PMID / URL | 出典確認用 |
 
 ## 収集の方針
@@ -33,17 +33,27 @@ Mac の Numbers で開ける一覧ファイルを毎週土曜に自動生成し�
 - 書誌情報は PubMed (NCBI E-utilities) から取得するため、巻号・ページ・著者は
   出版社の記録どおりです。推測で埋めた値は入りません。
 
+## 日本語訳について
+
+既定では**英語抄録のみ**を収集し、日本語訳は行いません。
+「日本語サマリー（記入用）」列は空欄で出力されるので、読みたい論文だけ
+抄録をコピーして Claude などで訳し、その欄に書き込む運用を想定しています。
+
+自動翻訳を有効にしたい場合は、Anthropic の API キーを
+`~/.cardio-digest.env` に設定してください（33本でおよそ1ドル）。
+
+```bash
+echo 'export ANTHROPIC_API_KEY=PASTE_YOUR_REAL_KEY_HERE' > ~/.cardio-digest.env
+chmod 600 ~/.cardio-digest.env
+python3 -m pip install --user anthropic
+python3 scripts/fetch_cardio_papers.py --diagnose   # 設定を確認
+```
+
 ## セットアップ（Mac で一度だけ）
 
 ```bash
 git clone <このリポジトリ> ~/cardio-digest
 cd ~/cardio-digest
-
-# 日本語訳に使う API キーを設定（省略すると英語抄録のみになります）
-# キーは https://console.anthropic.com/settings/keys で発行します
-# ↓ sk-ant- で始まる100文字前後の実際のキーに置き換えてください
-echo 'export ANTHROPIC_API_KEY=PASTE_YOUR_REAL_KEY_HERE' > ~/.cardio-digest.env
-chmod 600 ~/.cardio-digest.env
 
 # 週次実行を登録
 ./scripts/setup.sh
@@ -69,7 +79,6 @@ launchctl bootout gui/$UID/jp.cardio.weekly-digest
 ```bash
 python3 scripts/fetch_cardio_papers.py                 # 直近7日
 python3 scripts/fetch_cardio_papers.py --days 30       # 直近30日
-python3 scripts/fetch_cardio_papers.py --no-translate  # 翻訳せず高速に
 python3 scripts/fetch_cardio_papers.py --outdir ~/Desktop
 ```
 
@@ -107,5 +116,5 @@ APIキーの有無と形式、`anthropic` パッケージの導入状況、実�
 ## 動作要件
 
 - macOS（Numbers 変換と launchd 登録のため）
-- Python 3.9 以上 + `openpyxl` と `anthropic`（`setup.sh` が導入します）
+- Python 3.9 以上 + `openpyxl`（`setup.sh` が導入します）。日本語訳を使う場合のみ `anthropic` も必要
 - Numbers.app（未インストールでも `.xlsx` は生成されます）
