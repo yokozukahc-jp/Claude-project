@@ -206,13 +206,22 @@ def parse_article(art):
     }
 
 
+def valid_api_key(key):
+    """実際に使えそうな API キーかどうか。
+
+    説明用のプレースホルダが設定ファイルに残っている事故が多いため、
+    翻訳を試みる前にここで弾く。
+    """
+    return bool(key) and key.startswith("sk-ant-") and "..." not in key and len(key) >= 40
+
+
 def translate(rows, model="claude-opus-5"):
     """Claude API で抄録を日本語サマリーに要約翻訳する。
 
     ANTHROPIC_API_KEY が未設定なら英語抄録のみを残してスキップする。
     1本ずつ独立に処理し、失敗した論文だけを記録して残りは続行する。
     """
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if not valid_api_key(os.environ.get("ANTHROPIC_API_KEY")):
         print("i 日本語訳は行いません（英語抄録のみ）。有効にするには --diagnose を参照",
               file=sys.stderr)
         return None
@@ -220,7 +229,7 @@ def translate(rows, model="claude-opus-5"):
     try:
         import anthropic
     except ImportError:
-        return ("anthropic パッケージが導入されていません"
+        return ("日本語訳は入っていません: anthropic パッケージが未導入です"
                 "（python3 -m pip install --user anthropic）")
 
     # レート制限(429)やサーバエラーは SDK が指数バックオフで再試行する
@@ -302,7 +311,7 @@ def diagnose(model="claude-opus-5", env_status=None):
             print("     次で中身を確認してください: cat ~/.cardio-digest.env")
             print("     期待する形式: export ANTHROPIC_API_KEY=sk-ant-（以下実キー）")
         return 1
-    if not key.startswith("sk-ant-") or "..." in key or len(key) < 40:
+    if not valid_api_key(key):
         print(f"[NG] ANTHROPIC_API_KEY が実際のキーではありません（長さ {len(key)}）")
         print(f"     現在の値: {key[:12]}...")
         print("     説明用の例示文字列がそのまま保存されています。")
