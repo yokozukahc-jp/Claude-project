@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>jp.cardio.weekly-digest</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- ↓ setup.sh が実際のパスに書き換えます -->
+        <string>__SCRIPT_PATH__</string>
+    </array>
+
+    <!-- 毎週土曜 7:12 に実行（Weekday 6 = 土曜） -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key><integer>6</integer>
+        <key>Hour</key><integer>7</integer>
+        <key>Minute</key><integer>12</integer>
+    </dict>
+
+    <!-- 登録直後には実行しない。スリープ等で時刻を逃した場合は
+         launchd が起床後に自動で遅延実行する -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/jp.cardio.weekly-digest.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/jp.cardio.weekly-digest.err</string>
+</dict>
+</plist>
