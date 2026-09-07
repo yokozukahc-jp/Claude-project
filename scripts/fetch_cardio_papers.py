@@ -399,43 +399,88 @@ def write_xlsx(rows, path, period):
     wb.save(path)
 
 
+def _osascript(script, timeout=300):
+    """AppleScript を実行して CompletedProcess を返す。"""
+    return subprocess.run(["osascript", "-e", script],
+                          capture_output=True, timeout=timeout, text=True)
+
+
+def _numbers_running():
+    try:
+        r = _osascript('application "Numbers" is running', timeout=30)
+        return r.stdout.strip() == "true"
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def ensure_numbers(timeout=90):
+    """Numbers.app を起動して応答可能になるまで待つ。
+
+    launchd から起動された場合、Numbers は動いていないことが多く、
+    いきなり Apple Events を送ると -600 で失敗する。
+    """
+    if _numbers_running():
+        return True
+
+    try:
+        # -g 前面に出さない / -j 隠したまま起動する
+        subprocess.run(["/usr/bin/open", "-gja", "Numbers"],
+                       capture_output=True, timeout=60, text=True)
+    except Exception:  # noqa: BLE001
+        return False
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _numbers_running():
+            return True
+        time.sleep(2)
+    return False
+
+
 def to_numbers(xlsx_path):
     """macOS 上で Numbers に読み込ませ .numbers として保存する。
 
     失敗しても .xlsx はそのまま使えるので処理は継続する。
-    launchd から起動された場合、オートメーションの許可が無いと
-    Apple Events が拒否される（エラー -1743）。
     """
     if sys.platform != "darwin":
         return None
 
+    def fail(detail, hint=None):
+        print(f"! Numbers への変換に失敗しました（.xlsx はそのまま使えます）\n"
+              f"  {detail}", file=sys.stderr)
+        if hint:
+            print(f"  {hint}", file=sys.stderr)
+        return None
+
+    if not ensure_numbers():
+        return fail("Numbers.app を起動できませんでした",
+                    "ログイン中でない場合、バックグラウンドからは起動できません")
+
     numbers_path = os.path.splitext(xlsx_path)[0] + ".numbers"
     script = f'''
     tell application "Numbers"
+        launch
         set d to open POSIX file "{xlsx_path}"
         save d in POSIX file "{numbers_path}"
         close d saving no
     end tell
     '''
     try:
-        proc = subprocess.run(["osascript", "-e", script],
-                              capture_output=True, timeout=300, text=True)
+        proc = _osascript(script)
     except subprocess.TimeoutExpired:
-        print("! Numbers への変換がタイムアウトしました（.xlsx はそのまま使えます）",
-              file=sys.stderr)
-        return None
+        return fail("変換がタイムアウトしました")
 
     if proc.returncode == 0 and os.path.exists(numbers_path):
         return numbers_path
 
     detail = (proc.stderr or proc.stdout or "").strip() or f"終了コード {proc.returncode}"
-    print(f"! Numbers への変換に失敗しました（.xlsx はそのまま使えます）\n"
-          f"  {detail}", file=sys.stderr)
+    hint = None
     if "-1743" in detail or "Not authorized" in detail:
-        print("  オートメーションの許可がありません。システム設定 →\n"
-              "  プライバシーとセキュリティ → オートメーション を確認してください。",
-              file=sys.stderr)
-    return None
+        hint = ("オートメーションの許可がありません。システム設定 → "
+                "プライバシーとセキュリティ → オートメーション を確認してください")
+    elif "-600" in detail:
+        hint = "Numbers が応答していません。ログイン状態を確認してください"
+    return fail(detail, hint)
 
 
 def main():
