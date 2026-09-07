@@ -400,9 +400,15 @@ def write_xlsx(rows, path, period):
 
 
 def to_numbers(xlsx_path):
-    """macOS 上で Numbers に読み込ませ .numbers として保存する。"""
+    """macOS 上で Numbers に読み込ませ .numbers として保存する。
+
+    失敗しても .xlsx はそのまま使えるので処理は継続する。
+    launchd から起動された場合、オートメーションの許可が無いと
+    Apple Events が拒否される（エラー -1743）。
+    """
     if sys.platform != "darwin":
         return None
+
     numbers_path = os.path.splitext(xlsx_path)[0] + ".numbers"
     script = f'''
     tell application "Numbers"
@@ -412,13 +418,24 @@ def to_numbers(xlsx_path):
     end tell
     '''
     try:
-        subprocess.run(["osascript", "-e", script], check=True,
-                       capture_output=True, timeout=180)
-        return numbers_path
-    except Exception as e:  # noqa: BLE001
-        print(f"! Numbers への変換に失敗しました（.xlsx はそのまま使えます）: {e}",
+        proc = subprocess.run(["osascript", "-e", script],
+                              capture_output=True, timeout=300, text=True)
+    except subprocess.TimeoutExpired:
+        print("! Numbers への変換がタイムアウトしました（.xlsx はそのまま使えます）",
               file=sys.stderr)
         return None
+
+    if proc.returncode == 0 and os.path.exists(numbers_path):
+        return numbers_path
+
+    detail = (proc.stderr or proc.stdout or "").strip() or f"終了コード {proc.returncode}"
+    print(f"! Numbers への変換に失敗しました（.xlsx はそのまま使えます）\n"
+          f"  {detail}", file=sys.stderr)
+    if "-1743" in detail or "Not authorized" in detail:
+        print("  オートメーションの許可がありません。システム設定 →\n"
+              "  プライバシーとセキュリティ → オートメーション を確認してください。",
+              file=sys.stderr)
+    return None
 
 
 def main():
