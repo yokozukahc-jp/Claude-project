@@ -53,6 +53,44 @@ EXCLUDED_PUBTYPES = {
     "Patient Education Handout", "Video-Audio Media",
 }
 
+ENV_FILE = os.path.expanduser("~/.cardio-digest.env")
+
+
+def load_env_file(path=ENV_FILE):
+    """~/.cardio-digest.env から環境変数を読み込む。
+
+    シェルの `source` に頼らず、この関数だけで設定が効くようにする。
+    既に環境変数が設定されていればそちらを優先する。
+    戻り値は (読み込んだ変数名のリスト, 状態メッセージ)。
+    """
+    if not os.path.isfile(path):
+        return [], f"{path} がありません"
+
+    loaded = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                if "=" not in line:
+                    continue
+                name, _, value = line.partition("=")
+                name, value = name.strip(), value.strip()
+                # クォートで囲まれていれば外す
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                if name and name not in os.environ:
+                    os.environ[name] = value
+                    loaded.append(name)
+    except OSError as e:
+        return [], f"{path} を読めません: {e}"
+
+    return loaded, f"{path} から {len(loaded)} 件読み込みました"
+
+
 HEADERS = [
     "雑誌名", "巻(号)", "ページ", "論文タイトル", "著者名", "施設名",
     "サマリー（日本語訳）", "原題サマリー(英語)", "発行日", "研究種別",
@@ -175,7 +213,7 @@ def translate(rows, model="claude-opus-5"):
     1本ずつ独立に処理し、失敗した論文だけを記録して残りは続行する。
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return "ANTHROPIC_API_KEY が設定されていません"
+        return f"ANTHROPIC_API_KEY が設定されていません（{ENV_FILE} を確認してください）"
 
     try:
         import anthropic
@@ -238,15 +276,29 @@ def translate(rows, model="claude-opus-5"):
     return None
 
 
-def diagnose(model="claude-opus-5"):
-    """日本語訳が出ないときの原因を切り分ける。"""
+def diagnose(model="claude-opus-5", env_status=None):
+    """日本語訳が出ないときの原因を切り分ける。
+
+    env_status は main() が済ませた設定ファイル読み込みの結果。
+    """
     ok = True
     print("=== 日本語訳の診断 ===")
+
+    if env_status:
+        loaded, msg = env_status
+        print(f"[{'OK' if loaded else '--'}] 設定ファイル: {msg}")
 
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         print("[NG] ANTHROPIC_API_KEY が設定されていません")
-        print("     対処: source ~/.cardio-digest.env を実行してから再実行してください")
+        if not os.path.isfile(ENV_FILE):
+            print(f"     {ENV_FILE} が存在しません。次のコマンドで作成してください:")
+            print("       echo 'export ANTHROPIC_API_KEY=<実際のキー>' > ~/.cardio-digest.env")
+            print("       chmod 600 ~/.cardio-digest.env")
+        else:
+            print(f"     {ENV_FILE} はありますが ANTHROPIC_API_KEY の行が読めません。")
+            print("     次で中身を確認してください: cat ~/.cardio-digest.env")
+            print("     期待する形式: export ANTHROPIC_API_KEY=sk-ant-（以下実キー）")
         return 1
     if not key.startswith("sk-ant-") or "..." in key or len(key) < 40:
         print(f"[NG] ANTHROPIC_API_KEY が実際のキーではありません（長さ {len(key)}）")
@@ -365,8 +417,10 @@ def main():
                     help="日本語訳が出ない原因を調べて終了する")
     args = ap.parse_args()
 
+    env_status = load_env_file()
+
     if args.diagnose:
-        return diagnose(args.model)
+        return diagnose(args.model, env_status)
 
     today = dt.date.today()
     start = today - dt.timedelta(days=args.days)

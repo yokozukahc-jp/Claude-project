@@ -40,7 +40,8 @@ git clone <このリポジトリ> ~/cardio-digest
 cd ~/cardio-digest
 
 # 日本語訳に使う API キーを設定（省略すると英語抄録のみになります）
-echo 'export ANTHROPIC_API_KEY=<コンソールで発行した実際のキー>' > ~/.cardio-digest.env
+# キーは https://console.anthropic.com/settings/keys で発行します
+echo 'export ANTHROPIC_API_KEY=sk-ant-ここに実際のキー' > ~/.cardio-digest.env
 chmod 600 ~/.cardio-digest.env
 
 # 週次実行を登録
@@ -74,7 +75,6 @@ python3 scripts/fetch_cardio_papers.py --outdir ~/Desktop
 ## 日本語訳が入らないとき
 
 ```bash
-source ~/.cardio-digest.env
 python3 scripts/fetch_cardio_papers.py --diagnose
 ```
 
@@ -90,6 +90,9 @@ APIキーの有無と形式、`anthropic` パッケージの導入状況、実�
 | 変数 | 用途 |
 |---|---|
 | `ANTHROPIC_API_KEY` | 日本語要約翻訳に使用。未設定なら翻訳をスキップ |
+
+環境変数は `~/.cardio-digest.env` に書いておけばスクリプトが自動で読み込みます
+（`source` は不要）。シェルの環境変数が設定済みならそちらが優先されます。
 | `NCBI_API_KEY` | 任意。PubMed のレート制限が緩和されます（[取得先](https://www.ncbi.nlm.nih.gov/account/)） |
 
 ## 収集条件を変えたいとき
