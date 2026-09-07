@@ -415,8 +415,10 @@ def to_numbers(xlsx_path):
 def main():
     ap = argparse.ArgumentParser(description="循環器臨床論文の週次まとめを作成する")
     ap.add_argument("--days", type=int, default=7, help="遡る日数（既定: 7）")
-    ap.add_argument("--outdir", default=os.path.expanduser("~/Documents/循環器論文"),
-                    help="出力先ディレクトリ")
+    # ~/Documents ~/Desktop ~/Downloads は macOS の TCC 保護対象で、
+    # launchd から起動したプロセスは書き込めない。既定は保護対象外に置く。
+    ap.add_argument("--outdir", default=os.path.expanduser("~/循環器論文"),
+                    help="出力先ディレクトリ（既定: ~/循環器論文）")
     ap.add_argument("--no-translate", action="store_true", help="日本語訳を行わない")
     ap.add_argument("--model", default="claude-opus-5", help="翻訳に使うモデル")
     ap.add_argument("--diagnose", action="store_true",
@@ -450,9 +452,18 @@ def main():
     if not args.no_translate:
         warning = translate(rows, args.model)
 
-    os.makedirs(args.outdir, exist_ok=True)
     xlsx = os.path.join(args.outdir, f"循環器臨床論文{today:%Y%m%d}.xlsx")
-    write_xlsx(rows, xlsx, period)
+    try:
+        os.makedirs(args.outdir, exist_ok=True)
+        write_xlsx(rows, xlsx, period)
+    except PermissionError:
+        print(f"エラー: {args.outdir} に書き込めません。", file=sys.stderr)
+        print("  macOS では ~/Documents ~/Desktop ~/Downloads が保護されており、", file=sys.stderr)
+        print("  launchd から起動した週次実行はこれらに書き込めません。", file=sys.stderr)
+        print("  対処1: --outdir で保護対象外の場所を指定する（既定は ~/循環器論文）", file=sys.stderr)
+        print("  対処2: システム設定 → プライバシーとセキュリティ →", file=sys.stderr)
+        print("         フルディスクアクセス に /bin/bash を追加する", file=sys.stderr)
+        return 1
     print(f"作成しました: {xlsx}")
 
     numbers = to_numbers(xlsx)
