@@ -41,7 +41,8 @@ cd ~/cardio-digest
 
 # 日本語訳に使う API キーを設定（省略すると英語抄録のみになります）
 # キーは https://console.anthropic.com/settings/keys で発行します
-echo 'export ANTHROPIC_API_KEY=sk-ant-ここに実際のキー' > ~/.cardio-digest.env
+# ↓ sk-ant- で始まる100文字前後の実際のキーに置き換えてください
+echo 'export ANTHROPIC_API_KEY=PASTE_YOUR_REAL_KEY_HERE' > ~/.cardio-digest.env
 chmod 600 ~/.cardio-digest.env
 
 # 週次実行を登録

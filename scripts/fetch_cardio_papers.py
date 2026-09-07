@@ -302,9 +302,13 @@ def diagnose(model="claude-opus-5", env_status=None):
         return 1
     if not key.startswith("sk-ant-") or "..." in key or len(key) < 40:
         print(f"[NG] ANTHROPIC_API_KEY が実際のキーではありません（長さ {len(key)}）")
-        print("     ~/.cardio-digest.env が例示のまま（sk-ant-...）になっていませんか。")
-        print("     https://console.anthropic.com/settings/keys で発行したキーに")
-        print("     置き換えてから source ~/.cardio-digest.env を再実行してください")
+        print(f"     現在の値: {key[:12]}...")
+        print("     説明用の例示文字列がそのまま保存されています。")
+        print("     1) https://console.anthropic.com/settings/keys でキーを発行する")
+        print("        （Claude の月額プランとは別に、API の課金設定が必要です）")
+        print(f"     2) 発行したキーを {ENV_FILE} に書く:")
+        print("        echo 'export ANTHROPIC_API_KEY=<貼り付け>' > ~/.cardio-digest.env")
+        print("     3) もう一度 --diagnose を実行する")
         return 1
     print(f"[OK] ANTHROPIC_API_KEY を検出（末尾4桁: ...{key[-4:]}）")
 
