@@ -40,7 +40,7 @@ git clone <このリポジトリ> ~/cardio-digest
 cd ~/cardio-digest
 
 # 日本語訳に使う API キーを設定（省略すると英語抄録のみになります）
-echo 'export ANTHROPIC_API_KEY=sk-ant-...' > ~/.cardio-digest.env
+echo 'export ANTHROPIC_API_KEY=<コンソールで発行した実際のキー>' > ~/.cardio-digest.env
 chmod 600 ~/.cardio-digest.env
 
 # 週次実行を登録
@@ -70,6 +70,20 @@ python3 scripts/fetch_cardio_papers.py --days 30       # 直近30日
 python3 scripts/fetch_cardio_papers.py --no-translate  # 翻訳せず高速に
 python3 scripts/fetch_cardio_papers.py --outdir ~/Desktop
 ```
+
+## 日本語訳が入らないとき
+
+```bash
+source ~/.cardio-digest.env
+python3 scripts/fetch_cardio_papers.py --diagnose
+```
+
+APIキーの有無と形式、`anthropic` パッケージの導入状況、実際の API 応答を
+順に確認し、`[NG]` の行に対処法を表示します。
+
+翻訳がスキップされた場合は本体の実行時にも末尾で警告が出ます。
+`.xlsx` / `.numbers` は英語抄録入りで作成されるので、原因を直してから
+同じコマンドを再実行すれば上書きされます。
 
 ## 設定できる環境変数
 

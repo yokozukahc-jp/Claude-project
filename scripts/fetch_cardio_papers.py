@@ -175,15 +175,13 @@ def translate(rows, model="claude-opus-5"):
     1本ずつ独立に処理し、失敗した論文だけを記録して残りは続行する。
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("! ANTHROPIC_API_KEY が未設定のため日本語訳をスキップします", file=sys.stderr)
-        return
+        return "ANTHROPIC_API_KEY が設定されていません"
 
     try:
         import anthropic
     except ImportError:
-        print("! anthropic パッケージが未導入のため日本語訳をスキップします\n"
-              "  導入するには: python3 -m pip install --user anthropic", file=sys.stderr)
-        return
+        return ("anthropic パッケージが導入されていません"
+                "（python3 -m pip install --user anthropic）")
 
     # レート制限(429)やサーバエラーは SDK が指数バックオフで再試行する
     client = anthropic.Anthropic(max_retries=5, timeout=300.0)
@@ -225,12 +223,73 @@ def translate(rows, model="claude-opus-5"):
         except anthropic.APIConnectionError as e:
             row["サマリー（日本語訳）"] = f"[翻訳失敗: 接続エラー {e}]"
             failed += 1
+        except Exception as e:  # noqa: BLE001  SDK の版差など想定外の失敗
+            row["サマリー（日本語訳）"] = f"[翻訳失敗: {type(e).__name__}: {e}]"
+            failed += 1
+            if i == 1:
+                # 1本目で落ちるなら設定の問題。残り全部を試す前に理由を出す
+                print(f"! 最初の論文で翻訳に失敗しました: {type(e).__name__}: {e}\n"
+                      "  `--diagnose` で原因を確認してください", file=sys.stderr)
 
         print(f"  翻訳 {i}/{len(rows)}", file=sys.stderr)
 
     if failed:
-        print(f"! {failed} 件の翻訳に失敗しました（該当セルに理由が入っています）",
-              file=sys.stderr)
+        return f"{failed}/{len(rows)} 件の翻訳に失敗しました（該当セルに理由が入っています）"
+    return None
+
+
+def diagnose(model="claude-opus-5"):
+    """日本語訳が出ないときの原因を切り分ける。"""
+    ok = True
+    print("=== 日本語訳の診断 ===")
+
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        print("[NG] ANTHROPIC_API_KEY が設定されていません")
+        print("     対処: source ~/.cardio-digest.env を実行してから再実行してください")
+        return 1
+    if not key.startswith("sk-ant-") or "..." in key or len(key) < 40:
+        print(f"[NG] ANTHROPIC_API_KEY が実際のキーではありません（長さ {len(key)}）")
+        print("     ~/.cardio-digest.env が例示のまま（sk-ant-...）になっていませんか。")
+        print("     https://console.anthropic.com/settings/keys で発行したキーに")
+        print("     置き換えてから source ~/.cardio-digest.env を再実行してください")
+        return 1
+    print(f"[OK] ANTHROPIC_API_KEY を検出（末尾4桁: ...{key[-4:]}）")
+
+    try:
+        import anthropic
+    except ImportError:
+        print("[NG] anthropic パッケージが未導入です")
+        print("     対処: python3 -m pip install --user anthropic")
+        return 1
+    ver = getattr(anthropic, "__version__", "不明")
+    print(f"[OK] anthropic {ver} を検出（{anthropic.__file__}）")
+
+    print(f"[..] {model} へテスト送信中...")
+    try:
+        res = anthropic.Anthropic(max_retries=2, timeout=120.0).messages.create(
+            model=model, max_tokens=2000,
+            output_config={"effort": "low"},
+            messages=[{"role": "user",
+                       "content": "次の英文を日本語に訳してください: The trial met its primary endpoint."}],
+        )
+        text = "".join(b.text for b in res.content if b.type == "text").strip()
+        if text:
+            print(f"[OK] 応答を受信: {text}")
+        else:
+            print(f"[NG] 応答が空です（stop_reason={res.stop_reason}）")
+            ok = False
+    except TypeError as e:
+        print(f"[NG] SDK が引数を受け付けません: {e}")
+        print("     anthropic が古い可能性があります")
+        print("     対処: python3 -m pip install --user --upgrade anthropic")
+        ok = False
+    except Exception as e:  # noqa: BLE001
+        print(f"[NG] API 呼び出しに失敗: {type(e).__name__}: {e}")
+        ok = False
+
+    print("=== 診断ここまで ===")
+    return 0 if ok else 1
 
 
 def write_xlsx(rows, path, period):
@@ -302,7 +361,12 @@ def main():
                     help="出力先ディレクトリ")
     ap.add_argument("--no-translate", action="store_true", help="日本語訳を行わない")
     ap.add_argument("--model", default="claude-opus-5", help="翻訳に使うモデル")
+    ap.add_argument("--diagnose", action="store_true",
+                    help="日本語訳が出ない原因を調べて終了する")
     args = ap.parse_args()
+
+    if args.diagnose:
+        return diagnose(args.model)
 
     today = dt.date.today()
     start = today - dt.timedelta(days=args.days)
@@ -322,8 +386,9 @@ def main():
         print("該当論文がありませんでした。ファイルは作成しません。", file=sys.stderr)
         return 0
 
+    warning = None
     if not args.no_translate:
-        translate(rows, args.model)
+        warning = translate(rows, args.model)
 
     os.makedirs(args.outdir, exist_ok=True)
     xlsx = os.path.join(args.outdir, f"循環器臨床論文{today:%Y%m%d}.xlsx")
@@ -333,6 +398,13 @@ def main():
     numbers = to_numbers(xlsx)
     if numbers:
         print(f"作成しました: {numbers}")
+
+    if warning:
+        print()
+        print("=" * 60)
+        print(f"⚠️  日本語訳は入っていません: {warning}")
+        print("   原因を調べるには: python3 " + os.path.basename(__file__) + " --diagnose")
+        print("=" * 60)
     return 0
 
 
