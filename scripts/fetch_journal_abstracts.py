@@ -43,6 +43,32 @@ EXCLUDED_PUBTYPES = {
 }
 
 ENV_FILE = os.path.expanduser("~/.journal-digest.env")
+SEEN_FILE = os.path.expanduser("~/.journal-digest-seen.json")
+# PubMed への収載が最大でこれくらい遅れることを見込んで検索窓を取る。
+# 既に報告済みの PMID は除外するので、毎週重複して出力されることはない。
+SEEN_RETENTION_DAYS = 45
+
+
+def load_seen(path=SEEN_FILE):
+    """既に報告済みの PMID -> 報告日 の辞書を読み込む。"""
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_seen(seen, path=SEEN_FILE):
+    """報告済み PMID を保存する。古いものは間引いてファイルが肥大化しないようにする。"""
+    cutoff = (dt.date.today() - dt.timedelta(days=SEEN_RETENTION_DAYS)).isoformat()
+    pruned = {pmid: date for pmid, date in seen.items() if date >= cutoff}
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(pruned, f, ensure_ascii=False, indent=0)
+    except OSError as e:
+        print(f"! 報告済み一覧の保存に失敗しました(次回は重複が出ることがあります): {e}", file=sys.stderr)
 
 
 def load_env_file(path=ENV_FILE):
@@ -162,6 +188,7 @@ def parse_article(art):
     date = " ".join(_text(pubdate).split()) if pubdate is not None else ""
 
     return {
+        "pmid": pmid,
         "journal": journal_title,
         "title": _text(art.find(".//ArticleTitle")),
         "authors": ", ".join(authors),
@@ -284,12 +311,17 @@ def write_digest(path, period, rows):
 
 def main():
     ap = argparse.ArgumentParser(description="NEJM / Lancet の直近掲載論文の抄録を日本語訳してテキストにまとめる")
-    ap.add_argument("--days", type=int, default=7, help="遡る日数(既定: 7)")
+    # PubMed への収載が公開から1〜2週間ほど遅れることがあるため、
+    # 取りこぼしを防ぐよう長めに取る。重複は --no-dedup を付けない限り
+    # 自動的に除外されるので、広げても毎週同じ論文が出続けることはない。
+    ap.add_argument("--days", type=int, default=14, help="遡る日数(既定: 14)")
     # ~/Documents ~/Desktop ~/Downloads は macOS の TCC 保護対象で、
     # launchd から起動したプロセスは書き込めない。既定は保護対象外に置く。
     ap.add_argument("--outdir", default=os.path.expanduser("~/NEJM_Lancet抄録"),
                     help="出力先ディレクトリ(既定: ~/NEJM_Lancet抄録)")
     ap.add_argument("--no-translate", action="store_true", help="日本語訳を行わない(英語抄録のみ出力)")
+    ap.add_argument("--no-dedup", action="store_true",
+                    help="報告済みの論文も除外せず再度出力する(通常は不要)")
     ap.add_argument("--model", default="claude-opus-5", help="翻訳に使うモデル")
     ap.add_argument("--diagnose", action="store_true", help="動かない原因を調べて終了する")
     args = ap.parse_args()
@@ -315,11 +347,20 @@ def main():
     print(f"  {len(pmids)} 件ヒット", file=sys.stderr)
 
     rows = [r for r in (parse_article(a) for a in fetch(pmids, api_key)) if r]
-    rows.sort(key=lambda r: (r["journal"], r["title"]))
     print(f"  抄録ありの論文として {len(rows)} 件を採用", file=sys.stderr)
 
+    seen = {} if args.no_dedup else load_seen()
+    if seen:
+        before = len(rows)
+        rows = [r for r in rows if r["pmid"] not in seen]
+        skipped = before - len(rows)
+        if skipped:
+            print(f"  前回までに報告済みの {skipped} 件を除外", file=sys.stderr)
+
+    rows.sort(key=lambda r: (r["journal"], r["title"]))
+
     if not rows:
-        print("該当論文がありませんでした。ファイルは作成しません。", file=sys.stderr)
+        print("新着の論文がありませんでした。ファイルは作成しません。", file=sys.stderr)
         return 0
 
     translate_failed = 0
@@ -342,6 +383,12 @@ def main():
         print("  launchd から起動した週次実行はこれらに書き込めません。", file=sys.stderr)
         print("  対処: --outdir で保護対象外の場所を指定する(既定は ~/NEJM_Lancet抄録)", file=sys.stderr)
         return 1
+
+    if not args.no_dedup:
+        for row in rows:
+            if row["pmid"]:
+                seen[row["pmid"]] = today.isoformat()
+        save_seen(seen)
 
     print(f"作成しました: {out_path}")
     if translate_failed:

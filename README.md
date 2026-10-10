@@ -147,9 +147,15 @@ New England Journal of Medicine と The Lancet の直近掲載論文を集め、
 NEJM・Lancet のサイトは Bot 対策(WAF)で単純な HTTP クライアントからの
 アクセスを 403 Forbidden で拒否するため、ホームページを直接スクレイピング
 する方式ではなく、循環器ダイジェスト(`fetch_cardio_papers.py`)と同じ
-PubMed (NCBI E-utilities) 経由で取得します。両誌の論文はいずれも
-掲載後すぐ PubMed に収載されるため、「直近掲載論文」として扱えます。
-論説・レター・訂正・ニュースなど、抄録のない記事は除外します。
+PubMed (NCBI E-utilities) 経由で取得します。論説・レター・訂正・ニュースなど、
+抄録のない記事は除外します。
+
+**PubMed への収載は掲載から数日〜1週間以上遅れることがある**ため、検索窓は
+既定で直近14日分を取ります。そのままだと毎週半分近くが前回と重複してしまうので、
+一度ファイルに出力した論文の PMID を `~/.journal-digest-seen.json` に記録し、
+次回以降は自動的に除外します(45日分を保持)。「取りこぼさない」と「毎週重複
+しない」を両立させるための仕組みです。再度出力したい場合のみ `--no-dedup` を
+付けてください。
 
 ## 出力されるもの
 
@@ -202,9 +208,10 @@ launchctl bootout gui/$UID/jp.journal-digest.weekly
 ## 手動で実行する
 
 ```bash
-python3 scripts/fetch_journal_abstracts.py                 # 直近7日
-python3 scripts/fetch_journal_abstracts.py --days 14       # 直近14日
+python3 scripts/fetch_journal_abstracts.py                 # 直近14日(既定)
+python3 scripts/fetch_journal_abstracts.py --days 21       # 直近21日
 python3 scripts/fetch_journal_abstracts.py --no-translate  # 英語抄録のみ
+python3 scripts/fetch_journal_abstracts.py --no-dedup      # 報告済みも再度出力
 python3 scripts/fetch_journal_abstracts.py --outdir ~/Desktop
 ```
 
