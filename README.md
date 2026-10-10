@@ -135,3 +135,90 @@ APIキーの有無と形式、`anthropic` パッケージの導入状況、実�
 - macOS（Numbers 変換と launchd 登録のため）
 - Python 3.9 以上 + `openpyxl`（`setup.sh` が導入します）。日本語訳を使う場合のみ `anthropic` も必要
 - Numbers.app（未インストールでも `.xlsx` は生成されます）
+
+---
+
+# NEJM / Lancet 週次抄録ダイジェスト
+
+New England Journal of Medicine と The Lancet のホームページ（最新号）を巡回し、
+掲載論文の抄録を日本語に翻訳して1本のテキストファイルにまとめます。
+毎週土曜の朝に自動実行されるよう launchd に登録できます。
+
+PubMed 経由ではなく各誌の公開ページから直接タイトル・著者・抄録を取得する点が、
+上記の循環器ダイジェストとの違いです。
+
+## 出力されるもの
+
+`~/NEJM_Lancet抄録/` に `NEJM_Lancet抄録YYYYMMDD.txt` が作られます。
+誌ごとに論文を並べ、それぞれに原文の抄録と日本語訳を記載します。
+
+```
+■ New England Journal of Medicine（25本）
+----------------------------------------------------------------------
+
+タイトル: ...
+著者: ...
+掲載日: ...
+URL: https://www.nejm.org/doi/...
+
+[原文抄録]
+...
+
+[日本語訳]
+...
+
+======================================================================
+```
+
+## セットアップ（Mac で一度だけ）
+
+```bash
+# 日本語訳を使う場合（推奨）: Anthropic の API キーを設定
+echo 'export ANTHROPIC_API_KEY=sk-ant-...' > ~/.journal-digest.env
+chmod 600 ~/.journal-digest.env
+python3 -m pip install --user anthropic
+
+# 週次実行を登録（毎週土曜 7:30）
+./scripts/setup_journal_digest.sh
+```
+
+```bash
+# 次回実行予定を見る
+launchctl print gui/$UID/jp.journal-digest.weekly | grep -A3 'next fire'
+
+# 今すぐ動かして試す
+launchctl kickstart -p gui/$UID/jp.journal-digest.weekly
+
+# 自動実行を止める
+launchctl bootout gui/$UID/jp.journal-digest.weekly
+```
+
+実行ログは `~/Library/Logs/journal-digest/YYYYMMDD.log` に残ります。
+
+## 手動で実行する
+
+```bash
+python3 scripts/fetch_journal_abstracts.py                # 誌ごと最大25本
+python3 scripts/fetch_journal_abstracts.py --limit 10     # 誌ごと最大10本
+python3 scripts/fetch_journal_abstracts.py --no-translate # 英語抄録のみ
+python3 scripts/fetch_journal_abstracts.py --outdir ~/Desktop
+```
+
+## うまく取得できないとき
+
+```bash
+python3 scripts/fetch_journal_abstracts.py --diagnose
+```
+
+各誌の目次ページが取得できているか、論文リンクを検出できているか、
+API キーと翻訳の動作確認を順に行い、`[NG]` の行に対処法を表示します。
+
+**注意:** NEJM と Lancet のページ構造は予告なく変わることがあります。
+`--diagnose` で「論文リンクを検出できませんでした」と出た場合は、
+`scripts/fetch_journal_abstracts.py` 先頭の `JOURNALS` の `link_pattern` を
+実際のページの HTML に合わせて更新してください。
+
+## 動作要件
+
+- macOS（launchd 登録のため。スクリプト自体は Python が動けば他OSでも実行可）
+- Python 3.9 以上（追加パッケージなしで動作）。日本語訳を使う場合のみ `anthropic` が必要
