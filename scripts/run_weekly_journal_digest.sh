@@ -1,5 +1,5 @@
 #!/bin/bash
-# 毎週土曜に launchd から呼ばれるラッパー。NEJM / Lancet の最新号をまとめる。
+# 毎週土曜に launchd から呼ばれるラッパー。NEJM / Lancet の直近掲載論文をまとめる。
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

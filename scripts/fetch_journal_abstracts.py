@@ -1,56 +1,48 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""NEJM / Lancet のホームページ(最新号)を巡回し、抄録を日本語訳してテキストにまとめる.
+"""NEJM / Lancet の直近掲載論文の抄録を日本語訳してテキストにまとめる.
 
-PubMed には頼らず、各誌の公開ページ(最新号の目次と各論文ページ)から
-タイトル・著者・抄録を直接取得する。抄録は Claude API で日本語に翻訳し、
-1本のテキストファイルにまとめて出力する。
+NEJM・Lancet のサイトは Bot 対策(WAF)で単純な HTTP クライアントからの
+アクセスを 403 Forbidden で拒否するため、ホームページを直接スクレイピング
+する方式は使えない。代わりに PubMed (NCBI E-utilities) から両誌の直近の
+論文を取得する。これは本リポジトリの循環器ダイジェスト(fetch_cardio_papers.py)
+と同じ、実績のある取得方法。
+
+抄録は Claude API で日本語に翻訳し、1本のテキストファイルにまとめて出力する。
 
 使い方:
-    python3 fetch_journal_abstracts.py                 # 既定の出力先に作成
-    python3 fetch_journal_abstracts.py --limit 10      # 誌ごと最大10本
+    python3 fetch_journal_abstracts.py                 # 直近7日
+    python3 fetch_journal_abstracts.py --days 14       # 直近14日
     python3 fetch_journal_abstracts.py --outdir ~/Docs
     python3 fetch_journal_abstracts.py --diagnose      # 動かないときの原因調査
 """
 
 import argparse
 import datetime as dt
-import html
+import json
 import os
-import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 
+EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 TOOL = "journal-weekly-digest"
 
-# サイト構造が変わると目次の抽出が効かなくなることがある。
-# その場合は --diagnose でヒット件数を確認してほしい。
-JOURNALS = [
-    {
-        "name": "New England Journal of Medicine",
-        "toc_url": "https://www.nejm.org/toc/nejm/current",
-        "base_url": "https://www.nejm.org",
-        "link_pattern": re.compile(r'href="(/doi/(?:full|abs|10\.1056)/10\.1056/NEJM[\w.\-]*)"'),
-    },
-    {
-        "name": "The Lancet",
-        "toc_url": "https://www.thelancet.com/journals/lancet/issue/current",
-        "base_url": "https://www.thelancet.com",
-        "link_pattern": re.compile(r'href="(/journals/lancet/article/PII[\w()\-]+/fulltext)"'),
-    },
-]
+# 対象誌。PubMed の略誌名([ta])で指定する。
+JOURNALS = ['"N Engl J Med"[ta]', '"Lancet"[ta]']
+
+# 論説・レター・訂正・ニュースなど、および抄録のない記事は除外する
+EXCLUDED_PUBTYPES = {
+    "Editorial", "Comment", "News", "Published Erratum", "Erratum",
+    "Retraction of Publication", "Retracted Publication", "Biography",
+    "Historical Article", "Newspaper Article", "Congress", "Bibliography",
+    "Patient Education Handout", "Video-Audio Media",
+}
 
 ENV_FILE = os.path.expanduser("~/.journal-digest.env")
-
-HEADERS = {
-    # 一般的なブラウザに近い UA にしておく(素の urllib UA だと拒否するサイトがある)
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
-    ),
-}
 
 
 def load_env_file(path=ENV_FILE):
@@ -87,107 +79,94 @@ def load_env_file(path=ENV_FILE):
     return loaded, f"{path} から {len(loaded)} 件読み込みました"
 
 
-def _get(url, retries=4, timeout=60):
-    """ページを取得する。混雑時は指数バックオフで再試行する。"""
+def _get(url, retries=4):
+    """E-utilities への GET。混雑時は指数バックオフで再試行する。"""
     last = None
     for i in range(retries):
         try:
-            req = urllib.request.Request(url, headers=HEADERS)
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.read().decode("utf-8", errors="replace")
-        except urllib.error.HTTPError as e:
-            if e.code in (403, 404):
-                raise  # サイト側の拒否/不在はリトライしても変わらない
-            last = e
+            req = urllib.request.Request(url, headers={"User-Agent": TOOL})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
         except Exception as e:  # noqa: BLE001
             last = e
-        time.sleep(2 ** i)
-    raise RuntimeError(f"取得に失敗しました: {url}: {last}")
+            time.sleep(2 ** i)
+    raise RuntimeError(f"PubMed への接続に失敗しました: {last}")
 
 
-def _strip_tags(fragment):
-    """HTML断片からタグを除いてテキストだけ残す。"""
-    text = re.sub(r"<[^>]+>", " ", fragment)
-    text = html.unescape(text)
-    return re.sub(r"\s+", " ", text).strip()
+def build_query():
+    return "(" + " OR ".join(JOURNALS) + ")"
 
 
-def _meta(html_text, *names):
-    """<meta name="..." content="..."> を順に探して最初に見つかった値を返す。"""
-    for name in names:
-        m = re.search(
-            rf'<meta[^>]+name=["\']{re.escape(name)}["\'][^>]+content=["\']([^"\']*)["\']',
-            html_text, re.IGNORECASE,
-        )
-        if m:
-            text = html.unescape(m.group(1)).strip()
-            if text:
-                return text
-    return ""
+def search(query, mindate, maxdate, api_key=None):
+    params = {
+        "db": "pubmed", "term": query, "retmax": "300",
+        "datetype": "edat", "mindate": mindate, "maxdate": maxdate,
+        "retmode": "json", "tool": TOOL,
+    }
+    if api_key:
+        params["api_key"] = api_key
+    data = json.loads(_get(f"{EUTILS}/esearch.fcgi?{urllib.parse.urlencode(params)}"))
+    return data.get("esearchresult", {}).get("idlist", [])
 
 
-def _meta_all(html_text, name):
-    """同じ name の <meta> を全部拾う(著者名が複数タグに分かれている場合用)。"""
+def fetch(pmids, api_key=None):
+    """PMID をまとめて efetch し、記事単位の XML 要素を返す。"""
     out = []
-    for m in re.finditer(
-        rf'<meta[^>]+name=["\']{re.escape(name)}["\'][^>]+content=["\']([^"\']*)["\']',
-        html_text, re.IGNORECASE,
-    ):
-        text = html.unescape(m.group(1)).strip()
-        if text:
-            out.append(text)
+    for i in range(0, len(pmids), 100):
+        params = {
+            "db": "pubmed", "id": ",".join(pmids[i:i + 100]),
+            "retmode": "xml", "tool": TOOL,
+        }
+        if api_key:
+            params["api_key"] = api_key
+        root = ET.fromstring(_get(f"{EUTILS}/efetch.fcgi?{urllib.parse.urlencode(params)}"))
+        out.extend(root.findall(".//PubmedArticle"))
+        time.sleep(0.4)
     return out
 
 
-def extract_links(toc_html, journal):
-    seen, links = set(), []
-    for m in journal["link_pattern"].finditer(toc_html):
-        path = m.group(1)
-        if path in seen:
-            continue
-        seen.add(path)
-        links.append(journal["base_url"] + path)
-    return links
+def _text(node):
+    return "".join(node.itertext()).strip() if node is not None else ""
 
 
-def extract_abstract(article_html):
-    """抄録本文を取り出す。構造が変わっても拾えるよう複数の手がかりを順に試す。"""
-    abstract = _meta(article_html, "citation_abstract", "dc.Description", "DC.Description")
-    if abstract:
-        return _strip_tags(abstract)
+def parse_article(art):
+    """PubmedArticle 要素から必要な書誌情報を抜き出す。"""
+    pubtypes = {_text(p) for p in art.findall(".//PublicationType")}
+    if pubtypes & EXCLUDED_PUBTYPES:
+        return None
 
-    for pattern in (
-        r'<section[^>]+class="[^"]*\babstract\b[^"]*"[^>]*>(.*?)</section>',
-        r'<div[^>]+class="[^"]*\bAbstracts?\b[^"]*"[^>]*>(.*?)</div>\s*</div>',
-        r'<div[^>]+id="[^"]*abstract[^"]*"[^>]*>(.*?)</div>\s*</div>',
-    ):
-        m = re.search(pattern, article_html, re.IGNORECASE | re.DOTALL)
-        if m:
-            text = _strip_tags(m.group(1))
-            # 見出し語だけを拾ってしまった場合は不採用
-            if len(text) > 80:
-                return text
+    abstract_nodes = art.findall(".//Abstract/AbstractText")
+    parts = []
+    for n in abstract_nodes:
+        label = n.get("Label")
+        body = _text(n)
+        parts.append(f"{label}: {body}" if label else body)
+    abstract = "\n".join(p for p in parts if p)
+    if not abstract:
+        return None  # 抄録のないものは対象外
 
-    og = _meta(article_html, "og:description")
-    return _strip_tags(og) if og else ""
+    journal = art.find(".//Journal")
+    journal_title = _text(journal.find("Title")) if journal is not None else ""
 
+    authors = []
+    for a in art.findall(".//AuthorList/Author"):
+        last, fore = _text(a.find("LastName")), _text(a.find("ForeName"))
+        name = f"{last} {fore}".strip() or _text(a.find("CollectiveName"))
+        if name:
+            authors.append(name)
 
-def extract_article(url):
-    article_html = _get(url)
-    title = _meta(article_html, "citation_title")
-    if not title:
-        m = re.search(r"<title>([^<]+)</title>", article_html, re.IGNORECASE)
-        title = html.unescape(m.group(1)).strip() if m else "(タイトル不明)"
+    ids = {i.get("IdType"): _text(i) for i in art.findall(".//ArticleIdList/ArticleId")}
+    pmid = ids.get("pubmed", "")
 
-    authors = _meta_all(article_html, "citation_author")
-    date = _meta(article_html, "citation_publication_date", "citation_online_date")
-    abstract = extract_abstract(article_html)
+    pubdate = art.find(".//Journal/JournalIssue/PubDate")
+    date = " ".join(_text(pubdate).split()) if pubdate is not None else ""
 
     return {
-        "title": title,
+        "journal": journal_title,
+        "title": _text(art.find(".//ArticleTitle")),
         "authors": ", ".join(authors),
         "date": date,
-        "url": url,
+        "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
         "abstract_en": abstract,
     }
 
@@ -222,7 +201,7 @@ def translate(abstract_en, title, model):
 
 
 def diagnose(model="claude-opus-5", env_status=None):
-    """抄録が取れない/訳が出ないときの原因を切り分ける。"""
+    """論文が取れない/訳が出ないときの原因を切り分ける。"""
     ok = True
     print("=== 診断 ===")
 
@@ -230,20 +209,18 @@ def diagnose(model="claude-opus-5", env_status=None):
         loaded, msg = env_status
         print(f"[{'OK' if loaded else '--'}] 設定ファイル: {msg}")
 
-    for journal in JOURNALS:
-        print(f"[..] {journal['name']} の目次を取得中: {journal['toc_url']}")
-        try:
-            toc_html = _get(journal["toc_url"])
-        except Exception as e:  # noqa: BLE001
-            print(f"[NG] 取得に失敗しました: {type(e).__name__}: {e}")
-            ok = False
-            continue
-        links = extract_links(toc_html, journal)
-        if links:
-            print(f"[OK] 論文リンクを {len(links)} 件検出しました")
-        else:
-            print("[NG] 論文リンクを検出できませんでした(サイトの構造が変わった可能性)")
-            ok = False
+    print("[..] PubMed への接続を確認中...")
+    try:
+        today = dt.date.today()
+        start = today - dt.timedelta(days=14)
+        pmids = search(build_query(), start.strftime("%Y/%m/%d"), today.strftime("%Y/%m/%d"),
+                       os.environ.get("NCBI_API_KEY"))
+        print(f"[OK] 直近14日で {len(pmids)} 件ヒットしました")
+        if not pmids:
+            print("     0件です。--days を増やして様子を見てください。")
+    except Exception as e:  # noqa: BLE001
+        print(f"[NG] PubMed への接続に失敗しました: {type(e).__name__}: {e}")
+        ok = False
 
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
@@ -280,12 +257,16 @@ def diagnose(model="claude-opus-5", env_status=None):
     return 0 if ok else 1
 
 
-def write_digest(path, period, journal_results):
+def write_digest(path, period, rows):
+    by_journal = {}
+    for row in rows:
+        by_journal.setdefault(row["journal"], []).append(row)
+
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"NEJM / Lancet 週次抄録ダイジェスト({period})\n")
         f.write("=" * 70 + "\n\n")
-        for journal_name, articles in journal_results:
-            f.write(f"■ {journal_name}（{len(articles)}本）\n")
+        for journal_name, articles in by_journal.items():
+            f.write(f"■ {journal_name}({len(articles)}本)\n")
             f.write("-" * 70 + "\n\n")
             for a in articles:
                 f.write(f"タイトル: {a['title']}\n")
@@ -295,15 +276,15 @@ def write_digest(path, period, journal_results):
                     f.write(f"掲載日: {a['date']}\n")
                 f.write(f"URL: {a['url']}\n\n")
                 f.write("[原文抄録]\n")
-                f.write((a["abstract_en"] or "(抄録を取得できませんでした)") + "\n\n")
+                f.write(a["abstract_en"] + "\n\n")
                 f.write("[日本語訳]\n")
                 f.write((a.get("abstract_ja") or "(翻訳なし)") + "\n")
                 f.write("\n" + "=" * 70 + "\n\n")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="NEJM / Lancet の最新号抄録を日本語訳してテキストにまとめる")
-    ap.add_argument("--limit", type=int, default=25, help="誌ごとに処理する論文数の上限(既定: 25)")
+    ap = argparse.ArgumentParser(description="NEJM / Lancet の直近掲載論文の抄録を日本語訳してテキストにまとめる")
+    ap.add_argument("--days", type=int, default=7, help="遡る日数(既定: 7)")
     # ~/Documents ~/Desktop ~/Downloads は macOS の TCC 保護対象で、
     # launchd から起動したプロセスは書き込めない。既定は保護対象外に置く。
     ap.add_argument("--outdir", default=os.path.expanduser("~/NEJM_Lancet抄録"),
@@ -324,56 +305,37 @@ def main():
               file=sys.stderr)
 
     today = dt.date.today()
-    journal_results = []
+    start = today - dt.timedelta(days=args.days)
+    mindate, maxdate = start.strftime("%Y/%m/%d"), today.strftime("%Y/%m/%d")
+    period = f"{start:%Y-%m-%d} 〜 {today:%Y-%m-%d}"
+
+    api_key = os.environ.get("NCBI_API_KEY")
+    print(f"PubMed を検索中: {period}", file=sys.stderr)
+    pmids = search(build_query(), mindate, maxdate, api_key)
+    print(f"  {len(pmids)} 件ヒット", file=sys.stderr)
+
+    rows = [r for r in (parse_article(a) for a in fetch(pmids, api_key)) if r]
+    rows.sort(key=lambda r: (r["journal"], r["title"]))
+    print(f"  抄録ありの論文として {len(rows)} 件を採用", file=sys.stderr)
+
+    if not rows:
+        print("該当論文がありませんでした。ファイルは作成しません。", file=sys.stderr)
+        return 0
+
     translate_failed = 0
-    total_articles = 0
-
-    for journal in JOURNALS:
-        print(f"{journal['name']} の目次を取得中...", file=sys.stderr)
-        try:
-            toc_html = _get(journal["toc_url"])
-        except Exception as e:  # noqa: BLE001
-            print(f"  ! 目次の取得に失敗しました: {e}", file=sys.stderr)
-            journal_results.append((journal["name"], []))
-            continue
-
-        links = extract_links(toc_html, journal)[:args.limit]
-        print(f"  {len(links)} 本の論文を検出", file=sys.stderr)
-
-        articles = []
-        for i, url in enumerate(links, 1):
-            print(f"  [{i}/{len(links)}] {url}", file=sys.stderr)
+    if can_translate:
+        for i, row in enumerate(rows, 1):
             try:
-                article = extract_article(url)
+                row["abstract_ja"] = translate(row["abstract_en"], row["title"], args.model)
             except Exception as e:  # noqa: BLE001
-                print(f"    ! 取得に失敗しました: {e}", file=sys.stderr)
-                continue
-            if not article["abstract_en"]:
-                print("    ! 抄録を検出できませんでした(構造が変わったか抄録なし)", file=sys.stderr)
+                row["abstract_ja"] = f"[翻訳失敗: {type(e).__name__}: {e}]"
+                translate_failed += 1
+            print(f"  翻訳 {i}/{len(rows)}", file=sys.stderr)
 
-            if can_translate and article["abstract_en"]:
-                try:
-                    article["abstract_ja"] = translate(article["abstract_en"], article["title"], args.model)
-                except Exception as e:  # noqa: BLE001
-                    article["abstract_ja"] = f"[翻訳失敗: {type(e).__name__}: {e}]"
-                    translate_failed += 1
-
-            articles.append(article)
-            total_articles += 1
-            time.sleep(1)  # サイトに負荷をかけないよう間隔を空ける
-
-        journal_results.append((journal["name"], articles))
-
-    if total_articles == 0:
-        print("論文を1本も取得できませんでした。ファイルは作成しません。", file=sys.stderr)
-        print("  --diagnose で目次ページの取得状況を確認してください。", file=sys.stderr)
-        return 1
-
-    period = f"{today:%Y-%m-%d} 時点の最新号"
     out_path = os.path.join(args.outdir, f"NEJM_Lancet抄録{today:%Y%m%d}.txt")
     try:
         os.makedirs(args.outdir, exist_ok=True)
-        write_digest(out_path, period, journal_results)
+        write_digest(out_path, period, rows)
     except PermissionError:
         print(f"エラー: {args.outdir} に書き込めません。", file=sys.stderr)
         print("  macOS では ~/Documents ~/Desktop ~/Downloads が保護されており、", file=sys.stderr)
@@ -385,7 +347,7 @@ def main():
     if translate_failed:
         print()
         print("=" * 60)
-        print(f"⚠️  {translate_failed}/{total_articles} 件の翻訳に失敗しました(該当箇所に理由が入っています)")
+        print(f"⚠️  {translate_failed}/{len(rows)} 件の翻訳に失敗しました(該当箇所に理由が入っています)")
         print("   原因を調べるには: python3 " + os.path.basename(__file__) + " --diagnose")
         print("=" * 60)
     return 0

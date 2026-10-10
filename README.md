@@ -140,12 +140,16 @@ APIキーの有無と形式、`anthropic` パッケージの導入状況、実�
 
 # NEJM / Lancet 週次抄録ダイジェスト
 
-New England Journal of Medicine と The Lancet のホームページ（最新号）を巡回し、
-掲載論文の抄録を日本語に翻訳して1本のテキストファイルにまとめます。
+New England Journal of Medicine と The Lancet の直近掲載論文を集め、
+抄録を日本語に翻訳して1本のテキストファイルにまとめます。
 毎週土曜の朝に自動実行されるよう launchd に登録できます。
 
-PubMed 経由ではなく各誌の公開ページから直接タイトル・著者・抄録を取得する点が、
-上記の循環器ダイジェストとの違いです。
+NEJM・Lancet のサイトは Bot 対策(WAF)で単純な HTTP クライアントからの
+アクセスを 403 Forbidden で拒否するため、ホームページを直接スクレイピング
+する方式ではなく、循環器ダイジェスト(`fetch_cardio_papers.py`)と同じ
+PubMed (NCBI E-utilities) 経由で取得します。両誌の論文はいずれも
+掲載後すぐ PubMed に収載されるため、「直近掲載論文」として扱えます。
+論説・レター・訂正・ニュースなど、抄録のない記事は除外します。
 
 ## 出力されるもの
 
@@ -153,13 +157,13 @@ PubMed 経由ではなく各誌の公開ページから直接タイトル・著�
 誌ごとに論文を並べ、それぞれに原文の抄録と日本語訳を記載します。
 
 ```
-■ New England Journal of Medicine（25本）
+■ New England Journal of Medicine(12本)
 ----------------------------------------------------------------------
 
 タイトル: ...
 著者: ...
 掲載日: ...
-URL: https://www.nejm.org/doi/...
+URL: https://pubmed.ncbi.nlm.nih.gov/.../
 
 [原文抄録]
 ...
@@ -198,9 +202,9 @@ launchctl bootout gui/$UID/jp.journal-digest.weekly
 ## 手動で実行する
 
 ```bash
-python3 scripts/fetch_journal_abstracts.py                # 誌ごと最大25本
-python3 scripts/fetch_journal_abstracts.py --limit 10     # 誌ごと最大10本
-python3 scripts/fetch_journal_abstracts.py --no-translate # 英語抄録のみ
+python3 scripts/fetch_journal_abstracts.py                 # 直近7日
+python3 scripts/fetch_journal_abstracts.py --days 14       # 直近14日
+python3 scripts/fetch_journal_abstracts.py --no-translate  # 英語抄録のみ
 python3 scripts/fetch_journal_abstracts.py --outdir ~/Desktop
 ```
 
@@ -210,15 +214,19 @@ python3 scripts/fetch_journal_abstracts.py --outdir ~/Desktop
 python3 scripts/fetch_journal_abstracts.py --diagnose
 ```
 
-各誌の目次ページが取得できているか、論文リンクを検出できているか、
-API キーと翻訳の動作確認を順に行い、`[NG]` の行に対処法を表示します。
+PubMed への接続と検索結果の件数、API キーと翻訳の動作確認を順に行い、
+`[NG]` の行に対処法を表示します。
 
-**注意:** NEJM と Lancet のページ構造は予告なく変わることがあります。
-`--diagnose` で「論文リンクを検出できませんでした」と出た場合は、
-`scripts/fetch_journal_abstracts.py` 先頭の `JOURNALS` の `link_pattern` を
-実際のページの HTML に合わせて更新してください。
+## 設定できる環境変数
+
+| 変数 | 用途 |
+|---|---|
+| `ANTHROPIC_API_KEY` | 日本語訳に使用。未設定なら翻訳をスキップ(英語抄録のみ) |
+| `NCBI_API_KEY` | 任意。PubMed のレート制限が緩和されます([取得先](https://www.ncbi.nlm.nih.gov/account/)) |
+
+環境変数は `~/.journal-digest.env` に書いておけばスクリプトが自動で読み込みます。
 
 ## 動作要件
 
-- macOS（launchd 登録のため。スクリプト自体は Python が動けば他OSでも実行可）
-- Python 3.9 以上（追加パッケージなしで動作）。日本語訳を使う場合のみ `anthropic` が必要
+- macOS(launchd 登録のため。スクリプト自体は Python が動けば他OSでも実行可)
+- Python 3.9 以上(追加パッケージなしで動作)。日本語訳を使う場合のみ `anthropic` が必要
